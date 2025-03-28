@@ -1,61 +1,59 @@
 pipeline {
     agent any
+
     environment {
-        DOCKER_CREDENTIALS = 'docker-creds' // Docker Hub credentials in Jenkins
-        SSH_CREDENTIALS = '893a2937-75fe-40bf-bcd0-46879bd979e7' // SSH key for Minikube EC2
-        GIT_CREDENTIALS = 'github-fine-token' // GitHub credentials in Jenkins
-        REPO_URL = 'https://github.com/Cyber-Cloud-Pro/fast-api.git'
-        IMAGE_NAME = 'cyberxcloudxpro/fast-api'
-        MINIKUBE_IP = '52.90.236.80' // Public IP of Minikube EC2
+        DOCKER_IMAGE = 'cyberxcloudxpro/fast-api:latest'
+        MINIKUBE_USER = 'ec2-user'
+        MINIKUBE_HOST = '52.90.236.80'
+        DEPLOYMENT_FILE = 'fast-api-deployment.yaml'
     }
+
     stages {
         stage('Clone Repository') {
             steps {
-                git credentialsId: env.GIT_CREDENTIALS, url: env.REPO_URL, branch: 'main'
+                git credentialsId: 'github-fine-token', url: 'https://github.com/Cyber-Cloud-Pro/fast-api.git'
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                script {
-                    sh "docker build -t ${IMAGE_NAME}:latest ."
-                }
+                sh 'docker build -t $DOCKER_IMAGE .'
             }
         }
 
         stage('Push to Docker Hub') {
             steps {
-                script {
-                    withDockerRegistry([credentialsId: env.DOCKER_CREDENTIALS, url: '']) {
-                        sh "docker push ${IMAGE_NAME}:latest"
-                    }
+                withCredentials([string(credentialsId: 'docker-hub-token', variable: 'DOCKER_HUB_PWD')]) {
+                    sh '''
+                        echo $DOCKER_HUB_PWD | docker login -u cyberxcloudxpro --password-stdin
+                        docker push $DOCKER_IMAGE
+                    '''
                 }
             }
         }
 
-        stage('Deploy on Minikube') {
+        stage('Deploy to Minikube') {
             steps {
-                sshagent(credentials: [env.SSH_CREDENTIALS]) {
-                    sh """
-                    ssh -o StrictHostKeyChecking=no ec2-user@${MINIKUBE_IP} << EOF
-                    kubectl delete pod fast-api --ignore-not-found=true
-                    kubectl run fast-api --image=${IMAGE_NAME}:latest --port=8000
-                    kubectl expose pod fast-api --type=NodePort --name=fast-api-service --port=8000 --target-port=8000
-                    EOF
-                    """
+                sshagent(['ec2-user']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no $MINIKUBE_USER@$MINIKUBE_HOST << 'EOF'
+                        kubectl apply -f $DEPLOYMENT_FILE
+                        kubectl expose deployment fast-api --type=NodePort --port=8000 --target-port=8000
+                        EOF
+                    '''
                 }
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                sshagent(credentials: [env.SSH_CREDENTIALS]) {
-                    sh """
-                    ssh -o StrictHostKeyChecking=no ec2-user@${MINIKUBE_IP} << EOF
-                    kubectl get pods
-                    kubectl get svc fast-api-service
-                    EOF
-                    """
+                sshagent(['ec2-user']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no $MINIKUBE_USER@$MINIKUBE_HOST << 'EOF'
+                        kubectl get pods
+                        kubectl get services
+                        EOF
+                    '''
                 }
             }
         }
