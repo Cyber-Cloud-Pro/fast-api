@@ -1,46 +1,61 @@
 pipeline {
     agent any
-
     environment {
-        DOCKER_IMAGE = 'cyberxcloudxpro/fast-api:latest'
+        DOCKER_CREDENTIALS = 'docker-creds' // Docker Hub credentials in Jenkins
+        SSH_CREDENTIALS = '893a2937-75fe-40bf-bcd0-46879bd979e7' // SSH key for Minikube EC2
+        GIT_CREDENTIALS = 'github-fine-token' // GitHub credentials in Jenkins
+        REPO_URL = 'https://github.com/Cyber-Cloud-Pro/fast-api.git'
+        IMAGE_NAME = 'cyberxcloudxpro/fast-api'
+        MINIKUBE_IP = '52.90.236.80' // Public IP of Minikube EC2
     }
-
     stages {
         stage('Clone Repository') {
             steps {
-                git credentialsId: 'github-token', url: 'https://github.com/Cyber-Cloud-Pro/fast-api.git'
+                git credentialsId: env.GIT_CREDENTIALS, url: env.REPO_URL, branch: 'main'
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                sh 'docker build -t $DOCKER_IMAGE .'
+                script {
+                    sh "docker build -t ${IMAGE_NAME}:latest ."
+                }
             }
         }
 
         stage('Push to Docker Hub') {
             steps {
-                withDockerRegistry([credentialsId: 'docker-hub-credentials', url: '']) {
-                    sh 'docker push $DOCKER_IMAGE'
+                script {
+                    withDockerRegistry([credentialsId: env.DOCKER_CREDENTIALS, url: '']) {
+                        sh "docker push ${IMAGE_NAME}:latest"
+                    }
                 }
             }
         }
 
         stage('Deploy on Minikube') {
             steps {
-                sh '''
-                kubectl delete pod fast-api --ignore-not-found=true
-                kubectl run fast-api --image=$DOCKER_IMAGE --port=8000
-                kubectl expose pod fast-api --type=NodePort --port=8000
-                '''
+                sshagent(credentials: [env.SSH_CREDENTIALS]) {
+                    sh """
+                    ssh -o StrictHostKeyChecking=no ec2-user@${MINIKUBE_IP} << EOF
+                    kubectl delete pod fast-api --ignore-not-found=true
+                    kubectl run fast-api --image=${IMAGE_NAME}:latest --port=8000
+                    kubectl expose pod fast-api --type=NodePort --name=fast-api-service --port=8000 --target-port=8000
+                    EOF
+                    """
+                }
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                script {
-                    def appUrl = sh(script: "minikube service fast-api --url", returnStdout: true).trim()
-                    echo "✅ FastAPI is deployed! Access it at: ${appUrl}"
+                sshagent(credentials: [env.SSH_CREDENTIALS]) {
+                    sh """
+                    ssh -o StrictHostKeyChecking=no ec2-user@${MINIKUBE_IP} << EOF
+                    kubectl get pods
+                    kubectl get svc fast-api-service
+                    EOF
+                    """
                 }
             }
         }
